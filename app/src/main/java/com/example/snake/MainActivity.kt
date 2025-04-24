@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -23,11 +24,15 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import com.example.snake.ui.theme.DarkGreen
@@ -63,7 +68,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-data class State(val food: Pair<Int, Int>, val snake: List<Pair<Int, Int>>)
+data class State(
+    val food: Pair<Int, Int>,
+    val snake: List<Pair<Int, Int>>,
+    val score: Int = 0,
+    val isGameOver: Boolean = false
+)
 
 class Game(private val scope: CoroutineScope) {
 
@@ -72,23 +82,33 @@ class Game(private val scope: CoroutineScope) {
         MutableStateFlow(State(food = Pair(5, 5), snake = listOf(Pair(7, 7))))
     val state: Flow<State> = mutableState
 
+    private var snakeLength = 4
+
     var move = Pair(1, 0)
-        set(value) {
-            scope.launch {
-                mutex.withLock {
-                    field = value
+        private set
+
+    fun tryChangeDirection(newDir: Pair<Int, Int>) {
+        scope.launch {
+            mutex.withLock {
+                val (nx, ny) = newDir
+                val (cx, cy) = move
+                if (nx + cx == 0 && ny + cy == 0) {
+                    return@withLock
                 }
+                move = newDir
             }
         }
+    }
 
     init {
         scope.launch {
-            var snakeLength = 4
 
             while (true) {
                 delay(150)
-                mutableState.update {
-                    val newPosition = it.snake.first().let { pos ->
+                mutableState.update { old ->
+                    if (old.isGameOver) return@update old
+
+                    val newHead = old.snake.first().let { pos ->
                         mutex.withLock {
                             Pair(
                                 (pos.first + move.first + BOARD_SIZE) % BOARD_SIZE,
@@ -97,26 +117,44 @@ class Game(private val scope: CoroutineScope) {
                         }
                     }
 
-                    if (newPosition == it.food) {
-                        snakeLength++
+                    if (old.snake.contains(newHead)) {
+                        return@update old.copy(isGameOver = true)
                     }
 
-                    if (it.snake.contains(newPosition)) {
-                        snakeLength = 4
+                    var newScore = old.score
+                    var newSnakeLength = snakeLength
+
+                    if (newHead == old.food) {
+                        newSnakeLength++
+                        snakeLength = newSnakeLength
+                        newScore += 100
                     }
 
-                    it.copy(
-                        food = if (newPosition == it.food) {
-                            Pair(
-                                Random().nextInt(BOARD_SIZE),
-                                Random().nextInt(BOARD_SIZE)
-                            )
-                        } else {
-                            it.food
-                        },
-                        snake = listOf(newPosition) + it.snake.take(snakeLength - 1)
+                    val nextFood = if (newHead == old.food) {
+                        Pair(Random().nextInt(BOARD_SIZE), Random().nextInt(BOARD_SIZE))
+                    } else old.food
+
+                    old.copy(
+                        food = nextFood,
+                        snake = listOf(newHead) + old.snake.take(newSnakeLength - 1),
+                        score = newScore
                     )
                 }
+            }
+        }
+    }
+
+    fun reset() {
+        scope.launch {
+            mutex.withLock {
+                snakeLength = 4
+                mutableState.value = State(
+                    food = Pair(5, 5),
+                    snake = listOf(Pair(7, 7)),
+                    score = 0,
+                    isGameOver = false
+                )
+                move = Pair(1, 0)
             }
         }
     }
@@ -124,22 +162,6 @@ class Game(private val scope: CoroutineScope) {
     companion object {
         const val BOARD_SIZE = 16
     }
-}
-
-@Composable
-fun Snake(game: Game) {
-    val state = game.state.collectAsState(initial = null)
-
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        state.value?.let {
-            Board(it)
-        }
-        Buttons {
-            game.move = it
-
-        }
-    }
-
 }
 
 @Composable
@@ -219,6 +241,63 @@ fun Board(state: State) {
                         DarkGreen, Shapes.small
                     )
             )
+        }
+    }
+}
+
+@Composable
+fun Snake(game: Game) {
+    val state by game.state.collectAsState(
+        initial = State(
+            food = Pair(5, 5),
+            snake = listOf(Pair(7, 7)),
+            score = 0,
+            isGameOver = false
+        )
+    )
+
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            Spacer(Modifier.height(24.dp))
+            Text(
+                text = "Score: ${state.score}",
+                color = DarkGreen
+            )
+            Board(state)
+            Buttons(onDirectionChange = { dir ->
+                game.tryChangeDirection(dir)
+            })
+        }
+
+        if (state.isGameOver) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.6f))
+            ) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Game Over",
+                        style = MaterialTheme.typography.headlineLarge,
+                        color = LightGreen
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = { game.reset() },
+                        colors = ButtonDefaults.buttonColors(containerColor = DarkGreen)
+                    ) {
+                        Text("Continue", color = LightGreen)
+                    }
+                }
+            }
         }
     }
 }
